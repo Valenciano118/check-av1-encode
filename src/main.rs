@@ -1,6 +1,7 @@
 use clap::Parser;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde_json::Value;
+use std::process::{Child, Output};
 use std::time::Instant;
 use std::{
     fs::{self, File},
@@ -104,8 +105,13 @@ fn main() {
     let workers: usize = worker_num
         .parse()
         .expect("Failed parsing number of workers");
+
+    let total_available_threads = std::thread::available_parallelism()
+        .expect("Failed reading total threads on the system")
+        .get();
+    let threads_to_use = total_available_threads / workers / 2;
     rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
+        .num_threads(threads_to_use)
         .build_global()
         .unwrap(); // Sets the threads used by rayon's internal ThreadPool
 
@@ -179,9 +185,17 @@ fn encode_clip(
         }
     };
     //try start encoding
-    let av1an_args = ["/C", &file_name, &av1an_path];
+    let av1an_args: Vec<&str>;
+    #[cfg(target_os = "linux")]
+    {
+        av1an_args = vec![&file_name, &av1an_path];
+    }
+    #[cfg(target_os = "windows")]
+    {
+        av1an_args = vec!["/C", &file_name, &av1an_path];
+    }
     let av1an_error = format!("Cannot start encoding file: {}\nError: ", clip_path);
-    spawn_a_process(av1an_args, &av1an_error).unwrap();
+    spawn_a_process(av1an_args.as_slice(), &av1an_error).unwrap();
     return Ok(0);
 }
 
@@ -199,10 +213,21 @@ fn ssim2_clip(
 
     let save_file_name = format!("output_helper/ssim2/ssim2_output_{}.txt", thread);
 
-    let ssmi2_settings = format!(
-        "%1 runp {} video -f {} \"{}\" \"{}\" > {}",
-        ssim2_path, worker_num, original_clip_path, encoded_clip_path, save_file_name
-    );
+    let ssmi2_settings: String;
+    #[cfg(target_os = "linux")]
+    {
+        ssmi2_settings = format!(
+            "$1 runp {} video -f {} \"{}\" \"{}\" > {}",
+            ssim2_path, worker_num, original_clip_path, encoded_clip_path, save_file_name
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        ssmi2_settings = format!(
+            "%1 runp {} video -f {} \"{}\" \"{}\" > {}",
+            ssim2_path, worker_num, original_clip_path, encoded_clip_path, save_file_name
+        );
+    }
 
     let file_name = "ssmi2_encode_settings.bat".to_string();
     match create_file_encoding_settings(&ssmi2_settings, &file_name) {
@@ -214,9 +239,17 @@ fn ssim2_clip(
     };
 
     //try start ssim2
-    let ssim2_args = ["/C", &file_name, &arch_path];
+    let ssim2_args: Vec<&str>;
+    #[cfg(target_os = "linux")]
+    {
+        ssim2_args = vec![&file_name, &arch_path];
+    }
+    #[cfg(target_os = "windows")]
+    {
+        ssim2_args = vec!["/C", &file_name, &arch_path];
+    }
     let ssim2_error = format!("While Trying to ssim2 clip: {}\nError: ", encoded_clip_path);
-    spawn_a_process(ssim2_args, &ssim2_error).unwrap();
+    spawn_a_process(ssim2_args.as_slice(), &ssim2_error).unwrap();
 
     let output_file_content =
         fs::read_to_string(save_file_name).expect("Should have been able to read ssim2_output.txt");
@@ -339,9 +372,18 @@ fn extract_clips(
     let file_name_ffprobe = "ffprobe_settings.bat".to_string();
     let file_name_ffmpeg = "ffmpeg_settings.bat".to_string();
     let file_name_ffprobe_output = "output_helper/ffprobe/ffprobe_output.txt";
-    //ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "/mnt/c/Encode/720p_15s.mp4"
-    let ffprobe_settings = format!("%1 -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 \"{}\" > {}",
-        full_video, file_name_ffprobe_output);
+    //ffprobe -v error -select_streams v:0 -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "/mnt/c/Encode/720p_15s.mp4"
+    let ffprobe_settings: String;
+    #[cfg(target_os = "linux")]
+    {
+        ffprobe_settings = format!("$1 -v error -select_streams v:0 -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{}\" > {}",
+    full_video, file_name_ffprobe_output);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        ffprobe_settings = format!("%1 -v error -select_streams v:0 -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{}\" > {}",
+    full_video, file_name_ffprobe_output);
+    }
 
     //try to create a file to encode with
     match create_file_encoding_settings(&ffprobe_settings, &file_name_ffprobe) {
@@ -351,9 +393,17 @@ fn extract_clips(
             return Err(error_messege);
         }
     };
-    let ffprobe_args = ["/C", &file_name_ffprobe, &ffprobe_path];
+    let ffprobe_args: Vec<&str>;
+    #[cfg(target_os = "linux")]
+    {
+        ffprobe_args = vec![&file_name_ffprobe, ffprobe_path];
+    }
+    #[cfg(target_os = "windows")]
+    {
+        ffprobe_args = vec!["/C", &file_name_ffprobe, &ffprobe_path];
+    }
     let ffprobe_error = format!("Cannot probe file: {}\nError: ", full_video);
-    output_a_process(ffprobe_args, &ffprobe_error).unwrap();
+    output_a_process(ffprobe_args.as_slice(), &ffprobe_error).unwrap();
 
     //read the result that was saved to a file
     let output_file_content = fs::read_to_string(file_name_ffprobe_output)
@@ -376,10 +426,22 @@ fn extract_clips(
             + &"-".to_string()
             + &current_file_name_index.to_string()
             + ".mkv";
-        let ffmpeg_settings = format!(
-            "%1 -ss {} -i \"{}\" -c copy -t {} \"output_helper/clips/{}\"",
-            length_passed, full_video, clip_length, current_file_name
-        );
+
+        let ffmpeg_settings: String;
+        #[cfg(target_os = "linux")]
+        {
+            ffmpeg_settings = format!(
+                "$1 -ss {} -i \"{}\" -c copy -t {} \"output_helper/clips/{}\"",
+                length_passed, full_video, clip_length, current_file_name
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            ffmpeg_settings = format!(
+                "%1 -ss {} -i \"{}\" -c copy -t {} \"output_helper/clips/{}\"",
+                length_passed, full_video, clip_length, current_file_name
+            );
+        }
 
         match create_file_encoding_settings(&ffmpeg_settings, &file_name_ffmpeg) {
             Ok(ok) => ok,
@@ -388,10 +450,17 @@ fn extract_clips(
                 return Err(error_messege);
             }
         };
-
-        let ffmpeg_args = ["/C", &file_name_ffmpeg, &ffmpeg_path];
+        let ffmpeg_args: Vec<&str>;
+        #[cfg(target_os = "linux")]
+        {
+            ffmpeg_args = vec![&file_name_ffmpeg, ffmpeg_path];
+        }
+        #[cfg(target_os = "windows")]
+        {
+            ffmpeg_args = vec!["/C", &file_name_ffmpeg, &ffmpeg_path];
+        }
         let ffmpeg_error = format!("Cannot clip file: {}\nError: ", full_video);
-        output_a_process(ffmpeg_args, &ffmpeg_error).unwrap();
+        output_a_process(ffmpeg_args.as_slice(), &ffmpeg_error).unwrap();
         final_vec.push(current_file_name);
 
         length_passed += clip_length + interval;
@@ -433,12 +502,24 @@ fn check_and_create_folders_helpers() {
     fs::create_dir_all("output_helper/ffprobe").unwrap();
 }
 
-fn spawn_a_process(args: [&str; 3], custom_error: &String) -> Result<i32, String> {
+fn spawn_a_process(args: &[&str], custom_error: &String) -> Result<i32, String> {
     //using spawn to show the user the program running
-    let process = match Command::new("cmd").args(args).spawn() {
-        Ok(out) => out,
-        Err(err) => return Err(custom_error.to_string() + &err.to_string()),
-    };
+
+    let process: Child;
+    #[cfg(target_os = "linux")]
+    {
+        process = match Command::new("bash").args(args).spawn() {
+            Ok(out) => out,
+            Err(err) => return Err(custom_error.to_string() + &err.to_string()),
+        };
+        #[cfg(target_os = "windows")]
+        {
+            process = match Command::new("cmd").args(args).spawn() {
+                Ok(out) => out,
+                Err(err) => return Err(custom_error.to_string() + &err.to_string()),
+            }
+        };
+    }
 
     let output = match process.wait_with_output() {
         Ok(ok) => ok,
@@ -453,12 +534,24 @@ fn spawn_a_process(args: [&str; 3], custom_error: &String) -> Result<i32, String
     }
 }
 
-fn output_a_process(args: [&str; 3], custom_error: &String) -> Result<i32, String> {
+fn output_a_process(args: &[&str], custom_error: &String) -> Result<i32, String> {
     //using output to hide the program
-    let process = match Command::new("cmd").args(args).output() {
-        Ok(out) => out,
-        Err(err) => return Err(custom_error.to_string() + &err.to_string()),
-    };
+
+    let process: Output;
+    #[cfg(target_os = "linux")]
+    {
+        process = match Command::new("bash").args(args).output() {
+            Ok(out) => out,
+            Err(err) => return Err(custom_error.to_string() + &err.to_string()),
+        };
+        #[cfg(target_os = "windows")]
+        {
+            process = match Command::new("cmd").args(args).output() {
+                Ok(out) => out,
+                Err(err) => return Err(custom_error.to_string() + &err.to_string()),
+            }
+        };
+    }
 
     if process.status.success() {
         return Ok(1);
