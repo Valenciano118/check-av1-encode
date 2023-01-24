@@ -61,7 +61,7 @@ fn main() {
     let output_file = args.output_file;
     let speed = args.speed;
     let worker_num = args.worker_num;
-    let mut current_crf = args.crf;
+    let current_crf = args.crf;
     let clip_length = args.clip_length;
     let clip_interval = args.clip_interval;
     let crf_used = args.crf_option;
@@ -101,15 +101,11 @@ fn main() {
         return;
     }
 
-    let total_cpu_threads = std::thread::available_parallelism()
-        .expect("Failed retrieving number of threads")
-        .get();
     let workers: usize = worker_num
         .parse()
         .expect("Failed parsing number of workers");
-    let num_of_threads = total_cpu_threads / workers;
     rayon::ThreadPoolBuilder::new()
-        .num_threads(num_of_threads)
+        .num_threads(workers)
         .build_global()
         .unwrap(); // Sets the threads used by rayon's internal ThreadPool
 
@@ -118,19 +114,24 @@ fn main() {
     //for each clip find crf
     let crf_values: Vec<i32> = clip_names
         .par_iter()
-        .map(|clip_name| {
-            find_crf_for_90_ssim2(
-                current_crf,
-                clip_name,
-                &av1an_setings_unformatted,
-                &speed,
-                &worker_num,
-                &av1an_path,
-                &arch_path,
-                &ssim2_path,
-                &"0".to_string(),
-            )
-        })
+        .map_init(
+            || 0u32,
+            |index, clip_name| {
+                let crf_90 = find_crf_for_90_ssim2(
+                    current_crf,
+                    clip_name,
+                    &av1an_setings_unformatted,
+                    &speed,
+                    &worker_num,
+                    &av1an_path,
+                    &arch_path,
+                    &ssim2_path,
+                    &index.to_string(),
+                );
+                *index += 1;
+                crf_90
+            },
+        )
         .collect();
     // Par iter creates an parallel iterator using the global threads defined previously
     // Then map returns the value of the function find_crf_for_90_ssim2
